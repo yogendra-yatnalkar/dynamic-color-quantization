@@ -277,7 +277,7 @@ def create_color_bars_with_numbers(
         # Format the number
         formatted_num = f"{(num * 100):.1f}"
 
-        text = str(formatted_num) + " %"
+        text = str(formatted_num) + " % - " + str(color) 
         text_size = cv2.getTextSize(text, font, font_scale, font_thickness)[0]
         text_x = x_start + (width - text_size[0]) // 2
         text_y = y_start + (height + text_size[1]) // 2
