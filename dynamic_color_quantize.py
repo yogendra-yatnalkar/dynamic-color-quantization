@@ -98,7 +98,7 @@ def kmeans_cluster_1d_with_max_dist(arr):
     return labels, centers, max_distances
 
 
-def build_unbalanced_tree(arr, mapping_arr, threshold=10):
+def build_unbalanced_tree(arr, mapping_arr, threshold=10, percentile=5, debug_mode = False):
     """Builds an unbalanced binary tree by recursive k-means clustering of a 1D array,
        also handling a corresponding mapping array.
 
@@ -147,11 +147,26 @@ def build_unbalanced_tree(arr, mapping_arr, threshold=10):
                 cluster_center = centers[i]
                 cluster_max_dist = max_distances[i]
 
-                # get the most occurring element from "cluster_points"
-                # the corresponding point from cluster_mapping_arr will be our point of choice
-                _, freq_counts = np.unique(cluster_points, return_counts=True)
-                cluster_most_frequent_index = np.argmax(freq_counts)
-                point_of_focus = cluster_mapping_arr[cluster_most_frequent_index]
+                # Calculate the median distance
+                median_distance = np.median(cluster_points)
+
+                # Find the color closest to the median distance
+                index_closest_to_median = np.argmin(np.abs(cluster_points - median_distance))
+                # point_of_focus = cluster_mapping_arr[index_closest_to_median]
+
+                # Calculate distances from each color to the median
+                distances_to_median = np.abs(cluster_points - median_distance)
+
+                # Get the indices of the colors closest to the median (5%)
+                num_colors_to_avg = int(len(cluster_points) * (percentile / 100))
+                if num_colors_to_avg == 0:
+                    num_colors_to_avg = 1 # take a single one to prevent edge case
+
+                closest_indices = np.argsort(distances_to_median)[:num_colors_to_avg]
+
+                # Average the closest colors
+                closest_colors = cluster_mapping_arr[closest_indices]
+                point_of_focus = np.mean(closest_colors, axis=0).astype(np.uint8)
 
                 # get the color which is closest to the center
                 index_closest_to_center = np.argmin(
@@ -170,6 +185,13 @@ def build_unbalanced_tree(arr, mapping_arr, threshold=10):
                 }
                 node["children"][f"child_{i}"] = child_node
                 queue.append(child_node)
+
+                if(debug_mode):
+                    print("====")
+                    print("total cluster points: ", len(cluster_points))
+                    print("index_closest_to_median: ", index_closest_to_median)
+                    print("Num Colors to Avg: ", num_colors_to_avg)
+                    print("closest indices as per median: ", closest_indices)
 
     return root
 
@@ -321,8 +343,43 @@ def compute_cluster_strength(color_dist_with_cluster):
     cluster_strength = cluster_strength / np.sum(cluster_strength)
     return cluster_strength
 
+def get_cluster_corresponding_image_and_strength(img, unique_cluster_colors):
+    #Img shape will be nxmx3. First flatten it to shape: (n*m)x3
+    # post that, multiply axis 1 with 1000000 and axis 2 with 1000 and add all 3 dims
+    #final shape should be: (n*m)
 
-def dynamic_color_quantize(img, is_bgr=False, threshold=5):
+    img_flat = img.copy()
+    img_flat = img_flat.astype(np.int32)
+    img_flat = img_flat.reshape(-1, 3)
+    img_flat_updated = (img_flat.T[0]*1000000 + img_flat.T[1]*1000 + img_flat.T[2]).T
+
+    # Same post processing to be carried for unique colors array
+    # shape input: zx3
+    # shape output: z
+    unique_cluster_colors = unique_cluster_colors.astype(np.int32)
+    unique_cluster_colors_updated = (unique_cluster_colors.T[0]*1000000 + unique_cluster_colors.T[1]*1000 + unique_cluster_colors.T[2]).T
+
+    # now, using np.isin, check which all colors present in the img are also present
+    # in the list of unique colors of the cluster
+    mask = np.isin(img_flat_updated, unique_cluster_colors_updated)
+    cluster_strength = np.sum(mask)/len(mask)
+
+    mask = mask.reshape(img.shape[:2])
+    mask = mask*1 # binary mask
+
+    # get all the pixels where mask value == 1
+    indices_for_cluster = np.where(mask == 1)
+
+    cluster_img = np.zeros(img.shape)
+    cluster_img[indices_for_cluster] = img[indices_for_cluster]
+
+    cluster_img = cluster_img.astype(np.uint8)
+    cluster_img = cv2.cvtColor(cluster_img, cv2.COLOR_RGB2BGR)
+
+    return cluster_img, cluster_strength
+
+
+def dynamic_color_quantize(img, is_bgr=False, threshold=5, percentile=5):
     """
     threshold: The min distance between 2 colors is 0 (distance with itself) and max distance is 100
         as the distances are calibrated between 0 and 100. . The threshold decides, within individual cluster,
@@ -330,101 +387,101 @@ def dynamic_color_quantize(img, is_bgr=False, threshold=5):
     """
     # compute colors distance with white
     unique_colors, color_distances = img_distance_with_white(img, is_bgr=is_bgr)
-    print(np.max(color_distances), np.min(color_distances))
+    # print(np.max(color_distances), np.min(color_distances))
 
     # calibrate the distances to be between 0 and 100
     color_distances = calibrate_array(
         color_distances, min_val=0, max_val=764.83396636, target_min=0, target_max=100
     )
-    print(np.max(color_distances), np.min(color_distances))
+    # print(np.max(color_distances), np.min(color_distances))
 
     # build the tree with clustering
-    tree = build_unbalanced_tree(color_distances, unique_colors, threshold=threshold)
+    tree = build_unbalanced_tree(color_distances, unique_colors, threshold=threshold, percentile=percentile)
     leaf_nodes = get_leaf_nodes(tree)
 
     # get the quantized colors
-    most_freq_clr_in_cluster = []
-    center_closest_color_in_cluster = []
+    median_clr_in_cluster_li = []
+    center_closest_color_in_cluster_li = []
 
-    frequent_color_dist_with_cluster = []
-    center_closest_color_dist_with_cluster = []
+    cluster_strength_li = []
+    cluster_images_li = []
     for leaf in leaf_nodes:
 
-        most_freq_clr_in_cluster.append(leaf["point_of_focus"])
-        center_closest_color_in_cluster.append(
+        median_clr_in_cluster_li.append(leaf["point_of_focus"])
+        center_closest_color_in_cluster_li.append(
             leaf["point_from_mapping_closest_to_center"]
         )
 
-        # find the strength of each color  w.r.t frequency of color
-        color_dist_arr_with_freq = rgb_color_distance(
-            img.reshape(-1, 3), leaf["point_of_focus"]
-        )
-        frequent_color_dist_with_cluster.append(color_dist_arr_with_freq)
+        # get cluster strength
+        cluster_img, cluster_strn = get_cluster_corresponding_image_and_strength(img, leaf["mapping_arr"])
+        cluster_images_li.append(cluster_img)
+        cluster_strength_li.append(cluster_strn)
 
-        # find the strength of each color  w.r.t color closest to center
-        color_dist_arr_close_to_center = rgb_color_distance(
-            img.reshape(-1, 3), leaf["point_from_mapping_closest_to_center"]
-        )
-        center_closest_color_dist_with_cluster.append(color_dist_arr_close_to_center)
-
-    cluster_strength_with_freq = compute_cluster_strength(
-        frequent_color_dist_with_cluster
-    )
-    print(
-        "Color Strength: ",
-        cluster_strength_with_freq,
-        np.sum(cluster_strength_with_freq),
-    )
-
-    cluster_strength_with_center_closest = compute_cluster_strength(
-        center_closest_color_dist_with_cluster
-    )
-    print(
-        "Color Strength: ",
-        cluster_strength_with_center_closest,
-        np.sum(cluster_strength_with_center_closest),
-    )
 
     return (
-        most_freq_clr_in_cluster,
-        center_closest_color_in_cluster,
-        cluster_strength_with_freq,
-        cluster_strength_with_center_closest,
+        median_clr_in_cluster_li,
+        center_closest_color_in_cluster_li,
+        cluster_images_li,
+        cluster_strength_li,
         leaf_nodes,
     )
 
 
 if __name__ == "__main__":
-    img_path = "./car.jpg"  # flower or car
+    img_path = "./flower.jpg"  # flower or car
     img = cv2.imread(img_path)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    in_cluster_threshold = 6
+    in_cluster_threshold = 5
+    mdian_color_percentile_repr = 0
 
     (
-        most_freq_clr_in_cluster,
+        median_clr_in_cluster,
         center_closest_color_in_cluster,
-        cluster_strength_with_freq,
-        cluster_strength_with_center_closest,
+        cluster_images_li,
+        cluster_strength_li,
         color_clusters,
-    ) = dynamic_color_quantize(img, threshold=in_cluster_threshold)
+    ) = dynamic_color_quantize(img, threshold=in_cluster_threshold, percentile=mdian_color_percentile_repr)
 
+    # Sort the lists based on cluster_strength_li
+    sorted_data = sorted(zip(
+        median_clr_in_cluster,
+        center_closest_color_in_cluster,
+        cluster_images_li,
+        cluster_strength_li,
+        color_clusters
+    ), key=lambda x: x[3], reverse=True) #x[3] because the cluster strength is at position 3
+
+    # Unpack the sorted data back into separate lists
+    median_clr_in_cluster, \
+    center_closest_color_in_cluster, \
+    cluster_images_li, \
+    cluster_strength_li, \
+    color_clusters = zip(*sorted_data)
+
+    # Convert the zipped tuples to list
+    median_clr_in_cluster = list(median_clr_in_cluster)
+    center_closest_color_in_cluster = list(center_closest_color_in_cluster)
+    cluster_images_li = list(cluster_images_li)
+    cluster_strength_li = list(cluster_strength_li)
+    color_clusters = list(color_clusters)
+    
     print("No of clusters: ", len(color_clusters))
     print("Leaf Nodes:")
 
     for i, leaf in enumerate(color_clusters):
         print("Center: ", leaf["center"])
         print("Max Dist: ", leaf["max_dist"])
-        print("Cluster Strength: ", cluster_strength_with_freq[i])
+        print("Cluster Strength: ", cluster_strength_li[i])
         print(
             "Cluster strenght wrt closest color: ",
-            cluster_strength_with_center_closest[i],
+            cluster_strength_li[i],
         )
         print("Focus Color: ", leaf["point_of_focus"].tolist())
         print("-----------------")
 
-    freq_color_bar_img_with_strn = create_color_bars_with_numbers(
-        most_freq_clr_in_cluster,
-        cluster_strength_with_freq,
+    median_color_bar_img_with_strn = create_color_bars_with_numbers(
+        median_clr_in_cluster,
+        cluster_strength_li,
         height=30,
         width=400,
         max_rows_per_column=15,
@@ -432,7 +489,7 @@ if __name__ == "__main__":
 
     cntr_closest_color_bar_img_with_strn = create_color_bars_with_numbers(
         center_closest_color_in_cluster,
-        cluster_strength_with_center_closest,
+        cluster_strength_li,
         height=30,
         width=400,
         max_rows_per_column=15,
@@ -441,9 +498,9 @@ if __name__ == "__main__":
     img_to_display = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     img_to_display = cv2.resize(img_to_display, (600, 600))
     cv2.imshow("img", img_to_display)
-    cv2.imshow("colors with highest freq within cluster", freq_color_bar_img_with_strn)
+    cv2.imshow("Cluster Median Color", median_color_bar_img_with_strn)
     cv2.imshow(
-        "colors with center closest within cluster",
+        "Cluster Center Color",
         cntr_closest_color_bar_img_with_strn,
     )
 
