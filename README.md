@@ -7,9 +7,15 @@ color quantization with Binary( kmeans + trees )
 
 ## Example Output:
 
-- The % tells the cluster strength w.r.t the number of colors closest to that cluster color
+- The % tells the cluster strength (i.e number of unique colors present in that cluster out of all the unique colors)
 - The 2 output images show different ways of selecting cluster color 
-    - Most frequent color within each cluster OR
+    - Color which is at the median point of the cluster OR
     - Color which is closest to the cluster centroid
 
 ![alt text](README/image.png)
+
+
+## Process Flow: 
+
+![alt text](README/flow-diagram.png)
+
